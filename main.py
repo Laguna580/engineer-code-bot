@@ -5,18 +5,22 @@ from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import Message
-from aiogram import F
+import pytz  # Новая библиотека для работы с часовыми поясами
 
 # ========== НАСТРОЙКИ ==========
 API_TOKEN = os.getenv('BOT_TOKEN')  # Токен бота из переменных окружения
 
 # ⚠️ ВАЖНО: Укажите ID группы и ветки, куда отправлять коды
-GROUP_CHAT_ID = -1002828047738  # ID группы (отрицательное число для супергрупп)
-TARGET_THREAD_ID = 1743        # ID ветки (узнать через @GetIDsBot)
+GROUP_CHAT_ID = -1001234567890  # ID группы (отрицательное число для супергрупп)
+TARGET_THREAD_ID = 12345        # ID ветки (узнать через @GetIDsBot)
 
-# Время автоматической отправки (часы:минуты)
-SCHEDULE_HOUR = 19    # Час (0-23)
-SCHEDULE_MINUTE = 3  # Минута (0-59)
+# ========== НАСТРОЙКА ЧАСОВОГО ПОЯСА ==========
+# Список популярных поясов: Europe/Moscow, Europe/Kiev, Europe/Minsk, Asia/Yekaterinburg, etc.
+TIMEZONE = pytz.timezone('Europe/Moscow')  # <-- ИЗМЕНИТЕ НА ВАШ ПОЯС!
+
+# Время автоматической отправки (часы:минуты) в МЕСТНОМ времени
+SCHEDULE_HOUR = 0    # Час (0-23) по местному времени
+SCHEDULE_MINUTE = 1  # Минута (0-59) по местному времени
 
 # ========== НАСТРОЙКА ЛОГИРОВАНИЯ ==========
 logging.basicConfig(
@@ -30,6 +34,10 @@ bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
 # ========== ФУНКЦИИ ГЕНЕРАЦИИ КОДОВ ==========
+def get_local_time() -> datetime:
+    """Возвращает текущее время в заданном часовом поясе"""
+    return datetime.now(TIMEZONE)
+
 def generate_code_for_time(target_time: datetime) -> str:
     """
     Генерирует код для конкретного времени по формуле:
@@ -45,12 +53,13 @@ def generate_code_for_time(target_time: datetime) -> str:
     return f"#*{month_part}{day_part}{hour_part}"
 
 def generate_codes_for_day() -> list:
-    """Генерирует коды на все часы текущего дня (00:00 - 23:00)"""
-    now = datetime.now()
+    """Генерирует коды на все часы текущего дня (00:00 - 23:00) по местному времени"""
+    now_local = get_local_time()
     codes = []
     
     for hour in range(24):
-        time_point = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+        # Создаем время для каждого часа сегодня
+        time_point = now_local.replace(hour=hour, minute=0, second=0, microsecond=0)
         code = generate_code_for_time(time_point)
         time_str = time_point.strftime("%H:%M")
         codes.append((time_str, code))
@@ -69,7 +78,7 @@ def format_codes_message(codes: list, date: datetime) -> str:
             response += f"{time_str}  <b>{code}</b>\n"
         response += "\n"
     
-    response += "⏰ Коды указаны для каждого часа"
+    response += f"⏰ Коды указаны для каждого часа (по местному времени {TIMEZONE})"
     return response
 
 # ========== ОБРАБОТЧИКИ КОМАНД ==========
@@ -78,33 +87,52 @@ async def send_welcome(message: Message):
     """Приветственное сообщение"""
     await message.answer(
         "👋 Привет! Я бот для генерации кода в инженерное меню.\n\n"
+        f"🌍 Часовой пояс: {TIMEZONE}\n\n"
         "📌 Доступные команды:\n"
         "/code — код на текущее время\n"
         "/daycodes — все коды на сегодня\n"
         "/now — показать текущее время\n"
         "/send_to_topic — принудительно отправить коды в заданную ветку\n\n"
+        "/timezone — показать текущий часовой пояс\n\n"
         "🤖 Я работаю в группах и личных сообщениях"
+    )
+
+@dp.message(Command("timezone"))
+async def show_timezone(message: Message):
+    """Показывает текущий часовой пояс"""
+    now_local = get_local_time()
+    now_utc = datetime.now(pytz.UTC)
+    
+    await message.answer(
+        f"🌍 Часовой пояс бота: <b>{TIMEZONE}</b>\n"
+        f"🕒 Местное время: {now_local.strftime('%d.%m.%Y %H:%M:%S')}\n"
+        f"🕐 UTC время: {now_utc.strftime('%d.%m.%Y %H:%M:%S')}\n"
+        f"📊 Разница с UTC: {(now_local.utcoffset().total_seconds() / 3600):+.0f} часов",
+        parse_mode="HTML"
     )
 
 @dp.message(Command("now"))
 async def send_current_time(message: Message):
     """Показывает текущее время"""
-    now = datetime.now()
+    now_local = get_local_time()
     await message.answer(
-        f"🕒 Текущее время: {now.strftime('%d.%m.%Y %H:%M')}"
+        f"📅 {now_local.strftime('%d.%m.%Y')}\n"
+        f"🕒 {now_local.strftime('%H:%M:%S')}\n"
+        f"🌍 Часовой пояс: {TIMEZONE}"
     )
 
 @dp.message(Command("code"))
 async def send_code(message: Message):
     """Отправляет код на текущее время"""
     try:
-        code = generate_code_for_time(datetime.now())
-        now = datetime.now()
+        now_local = get_local_time()
+        code = generate_code_for_time(now_local)
         
         await message.answer(
-            f"📅 {now.strftime('%d.%m.%Y')}\n"
-            f"🕒 {now.strftime('%H:%M')}\n"
-            f"🔑 <b>{code}</b>",
+            f"📅 {now_local.strftime('%d.%m.%Y')}\n"
+            f"🕒 {now_local.strftime('%H:%M')}\n"
+            f"🔑 <b>{code}</b>\n"
+            f"🌍 {TIMEZONE}",
             parse_mode="HTML"
         )
     except Exception as e:
@@ -116,8 +144,8 @@ async def send_day_codes(message: Message):
     """Отправляет все коды на сегодня"""
     try:
         codes = generate_codes_for_day()
-        now = datetime.now()
-        response = format_codes_message(codes, now)
+        now_local = get_local_time()
+        response = format_codes_message(codes, now_local)
         
         await message.answer(response, parse_mode="HTML")
     except Exception as e:
@@ -132,8 +160,8 @@ async def send_to_specific_topic(message: Message):
     """
     try:
         codes = generate_codes_for_day()
-        now = datetime.now()
-        response = format_codes_message(codes, now)
+        now_local = get_local_time()
+        response = format_codes_message(codes, now_local)
         
         # Отправляем в конкретную ветку
         await bot.send_message(
@@ -153,14 +181,14 @@ async def send_to_specific_topic(message: Message):
 async def scheduled_job():
     """
     Фоновая задача, которая запускается каждый день в указанное время
-    и отправляет коды в заданную ветку.
+    (по местному времени) и отправляет коды в заданную ветку.
     """
     while True:
         try:
-            now = datetime.now()
+            now_local = get_local_time()
             
-            # Вычисляем время следующего запуска
-            next_run = now.replace(
+            # Вычисляем время следующего запуска в МЕСТНОМ времени
+            next_run_local = now_local.replace(
                 hour=SCHEDULE_HOUR, 
                 minute=SCHEDULE_MINUTE, 
                 second=0, 
@@ -168,18 +196,26 @@ async def scheduled_job():
             )
             
             # Если время сегодня уже прошло, переносим на завтра
-            if now >= next_run:
-                next_run += timedelta(days=1)
+            if now_local >= next_run_local:
+                next_run_local += timedelta(days=1)
+            
+            # Переводим время следующего запуска в UTC для ожидания
+            # (asyncio.sleep использует системное время, которое на сервере UTC)
+            next_run_utc = next_run_local.astimezone(pytz.UTC)
+            now_utc = datetime.now(pytz.UTC)
             
             # Ждем до следующего запуска
-            sleep_seconds = (next_run - now).total_seconds()
-            logger.info(f"Следующая отправка запланирована на {next_run.strftime('%d.%m.%Y %H:%M')}")
-            await asyncio.sleep(sleep_seconds)
+            sleep_seconds = (next_run_utc - now_utc).total_seconds()
+            
+            logger.info(f"📅 Следующая отправка запланирована на {next_run_local.strftime('%d.%m.%Y %H:%M')} (местное время)")
+            logger.info(f"⏰ Это соответствует {next_run_utc.strftime('%d.%m.%Y %H:%M')} UTC")
+            
+            await asyncio.sleep(max(0, sleep_seconds))
             
             # Генерируем и отправляем коды
             codes = generate_codes_for_day()
-            now = datetime.now()
-            response = format_codes_message(codes, now)
+            now_local = get_local_time()
+            response = format_codes_message(codes, now_local)
             
             await bot.send_message(
                 chat_id=GROUP_CHAT_ID,
@@ -187,7 +223,7 @@ async def scheduled_job():
                 text=response,
                 parse_mode="HTML"
             )
-            logger.info(f"✅ Коды успешно отправлены в ветку {TARGET_THREAD_ID}")
+            logger.info(f"✅ Коды успешно отправлены в ветку {TARGET_THREAD_ID} в {now_local.strftime('%H:%M')}")
             
         except Exception as e:
             logger.error(f"❌ Ошибка в scheduled_job: {e}")
@@ -203,8 +239,9 @@ async def main():
         return
     
     logger.info(f"🚀 Бот запускается...")
+    logger.info(f"🌍 Часовой пояс: {TIMEZONE}")
     logger.info(f"📢 Будет отправлять коды в группу {GROUP_CHAT_ID}, ветка {TARGET_THREAD_ID}")
-    logger.info(f"⏰ Ежедневная отправка в {SCHEDULE_HOUR:02d}:{SCHEDULE_MINUTE:02d}")
+    logger.info(f"⏰ Ежедневная отправка в {SCHEDULE_HOUR:02d}:{SCHEDULE_MINUTE:02d} по местному времени")
     
     # Запускаем фоновую задачу для автоматической отправки
     asyncio.create_task(scheduled_job())
@@ -214,7 +251,3 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
-
-
-
-
