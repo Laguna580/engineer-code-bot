@@ -11,8 +11,8 @@ from aiogram import F
 API_TOKEN = os.getenv('BOT_TOKEN')  # Токен бота из переменных окружения
 
 # ⚠️ ВАЖНО: Укажите ID группы и ветки, куда отправлять коды
-GROUP_CHAT_ID = -1001234567890  # ID группы (отрицательное число для супергрупп)
-TARGET_THREAD_ID = 12345        # ID ветки (узнать через @GetIDsBot)
+GROUP_CHAT_ID = -2828047738  # ID группы (отрицательное число для супергрупп)
+TARGET_THREAD_ID = 1743        # ID ветки (узнать через @GetIDsBot)
 
 # Время автоматической отправки (часы:минуты)
 SCHEDULE_HOUR = 0    # Час (0-23)
@@ -214,3 +214,4 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
+
