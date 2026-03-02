@@ -15,8 +15,8 @@ GROUP_CHAT_ID = -1002828047738  # ID группы (отрицательное ч
 TARGET_THREAD_ID = 1743        # ID ветки (узнать через @GetIDsBot)
 
 # Время автоматической отправки (часы:минуты)
-SCHEDULE_HOUR = 0    # Час (0-23)
-SCHEDULE_MINUTE = 1  # Минута (0-59)
+SCHEDULE_HOUR = 19    # Час (0-23)
+SCHEDULE_MINUTE = 3  # Минута (0-59)
 
 # ========== НАСТРОЙКА ЛОГИРОВАНИЯ ==========
 logging.basicConfig(
@@ -214,6 +214,7 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
+
 
 
 
