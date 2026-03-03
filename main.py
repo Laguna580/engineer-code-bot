@@ -11,8 +11,8 @@ import pytz
 API_TOKEN = os.getenv('BOT_TOKEN')
 
 # ID группы и ветки (замените на свои!)
-GROUP_CHAT_ID = -1001234567890
-TARGET_THREAD_ID = 12345
+GROUP_CHAT_ID = -1002828047738
+TARGET_THREAD_ID = 1743
 
 # Часовой пояс для отображения (можно оставить Europe/Moscow)
 DISPLAY_TIMEZONE = pytz.timezone('Europe/Moscow')
@@ -250,3 +250,4 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
+
