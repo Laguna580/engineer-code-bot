@@ -275,16 +275,18 @@ async def reset_message(message: Message):
     await message.reply("✅ Сообщение сброшено и создано заново")
 
 
-@dp.message(Command("config"))
-async def show_config(message: Message):
-    """Показывает текущие настройки бота"""
+@dp.message(Command("start", "help"))
+async def send_welcome(message: Message):
+    """Приветственное сообщение"""
     text = (
-        f"⚙️ *Текущие настройки*\n\n"
-        f"📢 Группа ID: `{config.GROUP_CHAT_ID}`\n"
-        f"📌 Ветка ID: `{config.TARGET_THREAD_ID}`\n"
-        f"📝 ID сообщения: `{current_message_id or 'не задано'}`\n"
-        f"📌 Закреплено: {'да' if config.PIN_MESSAGE else 'нет'}\n"
-        f"🌍 Часовой пояс: {escape_markdown(config.DISPLAY_TIMEZONE)}"
+        "👋 Привет\\! Я бот для генерации кодов в инженерное меню\\.\n\n"
+        "📌 *Доступные команды:*\n"
+        "/table — таблица кодов для всех часовых поясов\n"
+        "/code_utc \\[смещение\\] — код для конкретного UTC \\(например\\: /code_utc 3\\)\n"
+        "/now — текущее время\n"
+        "/timezones — список поддерживаемых поясов\n"
+        "/config — показать текущие настройки\n\n"
+        "🤖 Бот автоматически обновляет коды каждый час"
     )
     await message.answer(text, parse_mode="MarkdownV2")
 
@@ -415,4 +417,5 @@ async def main():
 
 
 if __name__ == '__main__':
+
     asyncio.run(main())
