@@ -5,10 +5,11 @@ from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import Message
+from aiogram.exceptions import TelegramBadRequest
 import pytz
+import re
 
 # ========== ИМПОРТ НАСТРОЕК ==========
-# Подключаем настройки из отдельного файла
 import config
 
 # ========== НАСТРОЙКА ЛОГИРОВАНИЯ ==========
@@ -22,7 +23,6 @@ logger = logging.getLogger(__name__)
 API_TOKEN = os.getenv('BOT_TOKEN')
 if not API_TOKEN:
     logger.error("❌ BOT_TOKEN не найден в переменных окружения!")
-    logger.error("Создайте файл .env с строкой: BOT_TOKEN=ваш_токен")
     exit(1)
 
 bot = Bot(token=API_TOKEN)
@@ -30,6 +30,9 @@ dp = Dispatcher()
 
 # Часовой пояс для отображения
 DISPLAY_TZ = pytz.timezone(config.DISPLAY_TIMEZONE)
+
+# Глобальная переменная для хранения ID сообщения
+current_message_id = config.MESSAGE_ID_TO_EDIT
 
 # ========== ДАННЫЕ О ЧАСОВЫХ ПОЯСАХ ==========
 TIMEZONES = [
@@ -58,6 +61,21 @@ TIMEZONES = [
     {"name": "UTC+11", "offset": 11, "code_suffix": "830"},
     {"name": "UTC+12", "offset": 12, "code_suffix": "831"},
 ]
+
+
+# ========== ФУНКЦИИ ДЛЯ ЭКРАНИРОВАНИЯ MARKDOWNV2 ==========
+def escape_markdown(text: str) -> str:
+    """
+    Экранирует специальные символы для MarkdownV2.
+    Список символов: _ * [ ] ( ) ~ ` > # + - = | { } . !
+    """
+    special_chars = r'_*[]()~`>#+-=|{}.!'
+    return re.sub(f'([{re.escape(special_chars)}])', r'\\\1', text)
+
+
+def format_code_with_markdown(code: str) -> str:
+    """Форматирует код жирным шрифтом в MarkdownV2"""
+    return f'*{code}*'
 
 
 # ========== ФУНКЦИИ ГЕНЕРАЦИИ КОДОВ ==========
@@ -92,102 +110,207 @@ def generate_code_for_offset(offset_hours: int) -> str:
     return generate_code_for_time(local_time)
 
 
-def generate_all_timezone_codes() -> dict:
-    """Генерирует коды для всех часовых поясов"""
-    codes = {}
+def get_current_time_for_offset(offset_hours: int) -> str:
+    """Возвращает текущее время для указанного смещения UTC в формате ЧЧ:ММ"""
+    utc_now = datetime.now(pytz.UTC)
+    local_time = utc_now + timedelta(hours=offset_hours)
+    return local_time.strftime("%H:%M")
+
+
+def generate_all_timezone_data() -> list:
+    """
+    Генерирует данные для всех часовых поясов:
+    возвращает список кортежей (название пояса, текущее время, код)
+    """
+    data = []
     utc_now = datetime.now(pytz.UTC)
 
     for tz_info in TIMEZONES:
         local_time = utc_now + timedelta(hours=tz_info["offset"])
+        current_time = local_time.strftime("%H:%M")
         code = generate_code_for_time(local_time)
-        codes[tz_info["name"]] = code
+        data.append({
+            "name": tz_info["name"],
+            "time": current_time,
+            "code": code
+        })
 
-    return codes
+    # Сортируем по offset
+    return sorted(data, key=lambda x: TIMEZONES[[t["name"] for t in TIMEZONES].index(x["name"])]["offset"])
 
 
-def format_codes_table(codes: dict, update_time: datetime) -> str:
-    """Форматирует коды в виде красивой таблицы"""
-    sorted_timezones = sorted(TIMEZONES, key=lambda x: x["offset"])
+def format_codes_table_markdown(data: list, update_time: datetime) -> str:
+    """Форматирует коды в виде красивой таблицы с текущим временем (MarkdownV2)"""
+
+    # Заголовок с компактной подписью (экранируем точки)
+    date_str = escape_markdown(update_time.strftime('%d.%m.%Y'))
+    time_str = escape_markdown(update_time.strftime('%H:%M:%S'))
 
     table = (
-        f"┌──────────────┬─────────┐\n"
-        f"│ Часовой пояс │   Код   │\n"
-        f"├──────────────┼─────────┤\n"
+        f"🔄 Обновлено: 📅 {date_str} 🕒 {time_str} ({escape_markdown(config.DISPLAY_TIMEZONE)})\n\n"
+        f"```\n"
+        f"┌──────────────┬──────────┬─────────┐\n"
+        f"│ Часовой пояс │  Время   │   Код   │\n"
+        f"├──────────────┼──────────┼─────────┤\n"
     )
 
-    for tz in sorted_timezones:
-        code = codes.get(tz["name"], "N/A")
-        table += f"│ {tz['name']:12} │ {code:7} │\n"
+    # Строки таблицы
+    for item in data:
+        table += f"│ {item['name']:12} │  {item['time']}   │ {item['code']:7} │\n"
 
-    table += f"└──────────────┴─────────┘\n"
+    # Нижняя граница и информация об обновлении
     table += (
-        f"\n📅 {update_time.strftime('%d.%m.%Y')}\n"
-        f"🕒 {update_time.strftime('%H:%M:%S')} ({config.DISPLAY_TIMEZONE})\n"
-        f"🔄 Коды обновляются каждый час"
+        f"└──────────────┴──────────┴─────────┘\n"
+        f"```\n"
+        f"⏰ Следующее обновление через 1 час"
     )
 
     return table
 
 
-# ========== ОБРАБОТЧИКИ КОМАНД ==========
+# ========== ФУНКЦИИ ДЛЯ РАБОТЫ С СООБЩЕНИЕМ ==========
+async def get_or_create_message() -> int:
+    """
+    Возвращает ID сообщения для редактирования.
+    Если сообщение не задано в конфиге - создает новое.
+    """
+    global current_message_id
+
+    if current_message_id:
+        try:
+            await bot.get_chat(config.GROUP_CHAT_ID)
+            return current_message_id
+        except:
+            logger.warning(f"⚠️ Сообщение {current_message_id} не найдено, создаю новое")
+            current_message_id = None
+
+    try:
+        data = generate_all_timezone_data()
+        now_local = get_local_time()
+        text = format_codes_table_markdown(data, now_local)
+
+        msg = await bot.send_message(
+            chat_id=config.GROUP_CHAT_ID,
+            message_thread_id=config.TARGET_THREAD_ID,
+            text=text,
+            parse_mode="MarkdownV2"
+        )
+
+        current_message_id = msg.message_id
+        logger.info(f"✅ Создано новое сообщение с ID: {current_message_id}")
+
+        if config.PIN_MESSAGE:
+            try:
+                await bot.pin_chat_message(
+                    chat_id=config.GROUP_CHAT_ID,
+                    message_id=current_message_id,
+                    disable_notification=True
+                )
+                logger.info("📌 Сообщение закреплено")
+            except Exception as e:
+                logger.error(f"❌ Не удалось закрепить сообщение: {e}")
+
+        return current_message_id
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка при создании сообщения: {e}")
+        raise
+
+
+async def update_codes_message():
+    """Обновляет существующее сообщение с кодами"""
+    global current_message_id
+
+    try:
+        if not current_message_id:
+            current_message_id = await get_or_create_message()
+
+        data = generate_all_timezone_data()
+        now_local = get_local_time()
+        new_text = format_codes_table_markdown(data, now_local)
+
+        await bot.edit_message_text(
+            chat_id=config.GROUP_CHAT_ID,
+            message_id=current_message_id,
+            text=new_text,
+            parse_mode="MarkdownV2"
+        )
+
+        logger.info(f"✅ Сообщение {current_message_id} обновлено в {now_local.strftime('%H:%M')}")
+
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e).lower():
+            logger.debug("Сообщение не изменилось")
+        else:
+            logger.error(f"❌ Ошибка при редактировании: {e}")
+            current_message_id = None
+    except Exception as e:
+        logger.error(f"❌ Ошибка при обновлении: {e}")
+        current_message_id = None
+
+
+# ========== КОМАНДЫ ==========
 @dp.message(Command("start", "help"))
 async def send_welcome(message: Message):
     """Приветственное сообщение"""
-    await message.answer(
-        "👋 Привет! Я бот для генерации кодов в инженерное меню.\n\n"
-        "📌 <b>Доступные команды:</b>\n"
+    text = (
+        "👋 Привет\\! Я бот для генерации кодов в инженерное меню\\.\n\n"
+        "📌 *Доступные команды:*\n"
         "/table — таблица кодов для всех часовых поясов\n"
-        "/code_utc [смещение] — код для конкретного UTC (например: /code_utc 3)\n"
+        "/code\\_utc \\[смещение\\] — код для конкретного UTC \\(например: /code_utc 3\\)\n"
         "/now — текущее время\n"
         "/timezones — список поддерживаемых поясов\n"
         "/config — показать текущие настройки\n\n"
         "🤖 Бот автоматически обновляет коды каждый час"
     )
+    await message.answer(text, parse_mode="MarkdownV2")
+
+
+@dp.message(Command("reset_message"))
+async def reset_message(message: Message):
+    """Сбрасывает ID сообщения и создает новое"""
+    global current_message_id
+    current_message_id = None
+    await get_or_create_message()
+    await message.reply("✅ Сообщение сброшено и создано заново")
 
 
 @dp.message(Command("config"))
 async def show_config(message: Message):
     """Показывает текущие настройки бота"""
-    await message.answer(
-        f"⚙️ <b>Текущие настройки</b>\n\n"
-        f"📢 Группа ID: <code>{config.GROUP_CHAT_ID}</code>\n"
-        f"📌 Ветка ID: <code>{config.TARGET_THREAD_ID}</code>\n"
-        f"🌍 Часовой пояс: {config.DISPLAY_TIMEZONE}\n"
-        f"🔄 Автообновление: {'включено' if config.ENABLE_HOURLY_UPDATES else 'выключено'}\n"
-        f"⏰ Отправка в: {config.SEND_AT_MINUTE:02d} минут каждого часа",
-        parse_mode="HTML"
+    text = (
+        f"⚙️ *Текущие настройки*\n\n"
+        f"📢 Группа ID: `{config.GROUP_CHAT_ID}`\n"
+        f"📌 Ветка ID: `{config.TARGET_THREAD_ID}`\n"
+        f"📝 ID сообщения: `{current_message_id or 'не задано'}`\n"
+        f"📌 Закреплено: {'да' if config.PIN_MESSAGE else 'нет'}\n"
+        f"🌍 Часовой пояс: {escape_markdown(config.DISPLAY_TIMEZONE)}"
     )
+    await message.answer(text, parse_mode="MarkdownV2")
 
 
-@dp.message(Command("timezones"))
-async def list_timezones(message: Message):
-    """Показывает все поддерживаемые часовые пояса"""
-    response = "🌍 <b>Поддерживаемые часовые пояса:</b>\n\n"
-    response += "┌──────────┬────────┐\n"
-    response += "│   Пояс   │ Смещ.  │\n"
-    response += "├──────────┼────────┤\n"
-
-    for tz in TIMEZONES:
-        response += f"│ {tz['name']:8} │ {tz['offset']:+4d}   │\n"
-
-    response += "└──────────┴────────┘"
-
-    await message.answer(response, parse_mode="HTML")
+@dp.message(Command("update"))
+async def manual_update(message: Message):
+    """Принудительное обновление таблицы"""
+    try:
+        await update_codes_message()
+        await message.reply("✅ Таблица обновлена")
+    except Exception as e:
+        await message.reply(f"❌ Ошибка: {escape_markdown(str(e))}")
 
 
 @dp.message(Command("now"))
 async def send_current_time(message: Message):
-    """Показывает текущее время в разных поясах"""
+    """Показывает текущее время"""
     utc_now = datetime.now(pytz.UTC)
     local_now = get_local_time()
 
-    await message.answer(
-        f"🕐 <b>Текущее время</b>\n\n"
-        f"UTC: {utc_now.strftime('%d.%m.%Y %H:%M:%S')}\n"
-        f"Локальное: {local_now.strftime('%d.%m.%Y %H:%M:%S')} ({config.DISPLAY_TIMEZONE})\n\n"
-        f"Для таблицы кодов используй /table",
-        parse_mode="HTML"
+    text = (
+        f"🕐 *Текущее время*\n\n"
+        f"UTC: {escape_markdown(utc_now.strftime('%d.%m.%Y %H:%M:%S'))}\n"
+        f"Локальное: {escape_markdown(local_now.strftime('%d.%m.%Y %H:%M:%S'))} ({escape_markdown(config.DISPLAY_TIMEZONE)})"
     )
+    await message.answer(text, parse_mode="MarkdownV2")
 
 
 @dp.message(Command("code_utc"))
@@ -196,48 +319,73 @@ async def code_for_utc(message: Message):
     try:
         args = message.text.split()
         if len(args) < 2:
-            await message.answer("❌ Укажите смещение: /code_utc 3")
+            await message.answer("❌ Укажите смещение: /code_utc 3", parse_mode="MarkdownV2")
             return
 
         offset = int(args[1])
         code = generate_code_for_offset(offset)
+        current_time = get_current_time_for_offset(offset)
 
-        await message.answer(
-            f"┌──────────────┬─────────┐\n"
-            f"│   UTC{offset:+3d}    │ {code:7} │\n"
-            f"└──────────────┴─────────┘",
-            parse_mode="HTML"
+        text = (
+            f"```\n"
+            f"┌──────────────┬──────────┬─────────┐\n"
+            f"│   UTC{offset:+3d}    │  {current_time}   │ {code:7} │\n"
+            f"└──────────────┴──────────┴─────────┘\n"
+            f"```"
         )
+        await message.answer(text, parse_mode="MarkdownV2")
     except ValueError:
-        await message.answer("❌ Неверный формат. Используйте число, например: /code_utc 3")
+        await message.answer("❌ Неверный формат\\. Используйте число", parse_mode="MarkdownV2")
     except Exception as e:
-        await message.answer("❌ Ошибка")
+        await message.answer(f"❌ Ошибка: {escape_markdown(str(e))}", parse_mode="MarkdownV2")
         logger.error(f"Error in /code_utc: {e}")
+
+
+@dp.message(Command("timezones"))
+async def list_timezones(message: Message):
+    """Показывает все поддерживаемые часовые пояса"""
+    text = "🌍 *Поддерживаемые часовые пояса:*\n\n```\n"
+    text += "┌──────────┬────────┐\n"
+    text += "│   Пояс   │ Смещ.  │\n"
+    text += "├──────────┼────────┤\n"
+
+    for tz in TIMEZONES:
+        text += f"│ {tz['name']:8} │ {tz['offset']:+4d}   │\n"
+
+    text += "└──────────┴────────┘\n```"
+
+    await message.answer(text, parse_mode="MarkdownV2")
 
 
 @dp.message(Command("table", "codes"))
 async def send_codes_table(message: Message):
     """Отправляет таблицу кодов для всех часовых поясов"""
     try:
-        codes = generate_all_timezone_codes()
+        data = generate_all_timezone_data()
         now_local = get_local_time()
-        response = format_codes_table(codes, now_local)
-        await message.answer(f"<pre>{response}</pre>", parse_mode="HTML")
+        response = format_codes_table_markdown(data, now_local)
+        await message.answer(response, parse_mode="MarkdownV2")
     except Exception as e:
-        await message.answer("❌ Ошибка при генерации кодов")
+        await message.answer(f"❌ Ошибка: {escape_markdown(str(e))}", parse_mode="MarkdownV2")
         logger.error(f"Error in /table: {e}")
 
 
-# ========== АВТОМАТИЧЕСКАЯ ОТПРАВКА ==========
+# ========== АВТОМАТИЧЕСКОЕ ОБНОВЛЕНИЕ ==========
 async def hourly_update_job():
-    """Фоновая задача для автоматической отправки"""
+    """Фоновая задача для автоматического обновления"""
     if not config.ENABLE_HOURLY_UPDATES:
-        logger.info("⏸ Автоматическая отправка отключена в настройках")
+        logger.info("⏸ Автоматическое обновление отключено")
         return
+
+    await asyncio.sleep(5)
+
+    try:
+        await get_or_create_message()
+    except Exception as e:
+        logger.error(f"❌ Не удалось создать начальное сообщение: {e}")
 
     while True:
         try:
-            # Ждем до следующего часа в указанную минуту
             now = datetime.now(pytz.UTC)
             next_run = (now + timedelta(hours=1)).replace(
                 minute=config.SEND_AT_MINUTE,
@@ -246,21 +394,10 @@ async def hourly_update_job():
             )
             sleep_seconds = (next_run - now).total_seconds()
 
-            logger.info(f"⏳ Следующая отправка через {sleep_seconds / 60:.1f} минут")
+            logger.info(f"⏳ Следующее обновление через {sleep_seconds / 60:.1f} минут")
             await asyncio.sleep(sleep_seconds)
 
-            # Генерируем и отправляем коды
-            codes = generate_all_timezone_codes()
-            now_local = get_local_time()
-            response = format_codes_table(codes, now_local)
-
-            await bot.send_message(
-                chat_id=config.GROUP_CHAT_ID,
-                message_thread_id=config.TARGET_THREAD_ID,
-                text=f"<pre>{response}</pre>",
-                parse_mode="HTML"
-            )
-            logger.info(f"✅ Таблица отправлена в {now_local.strftime('%H:%M')}")
+            await update_codes_message()
 
         except Exception as e:
             logger.error(f"❌ Ошибка в hourly_update_job: {e}")
@@ -272,13 +409,8 @@ async def main():
     """Главная функция запуска бота"""
     logger.info("🚀 Бот запускается...")
     logger.info(f"📢 Группа: {config.GROUP_CHAT_ID}, Ветка: {config.TARGET_THREAD_ID}")
-    logger.info(f"🌍 Часовой пояс: {config.DISPLAY_TIMEZONE}")
-    logger.info(f"🔄 Автоотправка: {'вкл' if config.ENABLE_HOURLY_UPDATES else 'выкл'}")
 
-    # Запускаем фоновую задачу
     asyncio.create_task(hourly_update_job())
-
-    # Запускаем поллинг
     await dp.start_polling(bot)
 
 
